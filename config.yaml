@@ -1,0 +1,31 @@
+# Model Configuration
+model:
+  type: "RandomForest"
+  target_column: "MedHouseVal"
+  test_size: 0.2
+  random_state: 42
+
+# Model Parameters
+params:
+  n_estimators: 100
+  max_depth: 10
+  min_samples_split: 5
+  random_state: 42
+
+# Paths
+paths:
+  data: "data/training_data.csv"
+  new_data: "data/new_data/"
+  models: "models/"
+  current_model: "models/current_model.pkl"
+  metadata: "models/model_metadata.json"
+
+# Performance Thresholds
+thresholds:
+  min_r2_score: 0.5
+  improvement_threshold: 0.01  # New model must be 1% better
+
+# MLflow
+mlflow:
+  experiment_name: "auto-retrainer"
+  tracking_uri: "mlruns"

@@ -1,0 +1,15 @@
+{
+  "timestamp": "2025-12-27T12:53:03.729997",
+  "metrics": {
+    "rmse": 0.5542159004248884,
+    "mae": 0.3781091407463265,
+    "r2_score": 0.7774217653048037
+  },
+  "model_type": "RandomForest",
+  "params": {
+    "n_estimators": 100,
+    "max_depth": 10,
+    "min_samples_split": 5,
+    "random_state": 42
+  }
+}
