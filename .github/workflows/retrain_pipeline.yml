@@ -1,213 +1,106 @@
 name: Automated Model Retraining Pipeline
 
-# Trigger the workflow when files are pushed to the data folder
 on:
   push:
     paths:
       - 'data/**'
-      - 'data/new_data/**'
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   retrain-and-deploy:
     runs-on: ubuntu-latest
     
     steps:
-      # Step 1: Checkout the repository
       - name: 📥 Checkout Repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # Get full history for proper tracking
+          fetch-depth: 0
       
-      # Step 2: Set up Python environment
       - name: 🐍 Set up Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          cache: 'pip'  # Cache pip dependencies for faster builds
+          cache: 'pip'
       
-      # Step 3: Install dependencies
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      # Step 4: Create necessary directories
       - name: 📁 Create Directories
         run: |
           mkdir -p models
           mkdir -p data/new_data
           mkdir -p mlruns
       
-      # Step 5: Merge new data with training data
       - name: 🔄 Merge New Data
         run: |
-          python << EOF
+          cat > merge_data.py << 'EOF'
           import pandas as pd
-          import os
           import glob
           
-          # Load existing training data
           training_data = pd.read_csv('data/training_data.csv')
-          print(f"📊 Current training data: {training_data.shape[0]} rows")
+          print(f"Current training data: {training_data.shape[0]} rows")
           
-          # Find all new data files
           new_data_files = glob.glob('data/new_data/*.csv')
           
           if new_data_files:
-              print(f"📥 Found {len(new_data_files)} new data file(s)")
-              
-              # Merge all new data
-              new_data_list = []
-              for file in new_data_files:
-                  df = pd.read_csv(file)
-                  new_data_list.append(df)
-                  print(f"   - {file}: {df.shape[0]} rows")
-              
-              # Combine everything
+              print(f"Found {len(new_data_files)} new data files")
+              new_data_list = [pd.read_csv(f) for f in new_data_files]
               all_new_data = pd.concat(new_data_list, ignore_index=True)
-              updated_training_data = pd.concat([training_data, all_new_data], ignore_index=True)
-              
-              # Remove duplicates if any
-              updated_training_data = updated_training_data.drop_duplicates()
-              
-              # Save updated training data
-              updated_training_data.to_csv('data/training_data.csv', index=False)
-              print(f"✅ Updated training data: {updated_training_data.shape[0]} rows")
-              print(f"📈 Added {updated_training_data.shape[0] - training_data.shape[0]} new rows")
+              updated_data = pd.concat([training_data, all_new_data], ignore_index=True)
+              updated_data = updated_data.drop_duplicates()
+              updated_data.to_csv('data/training_data.csv', index=False)
+              print(f"Updated training data: {updated_data.shape[0]} rows")
           else:
-              print("⚠️  No new data files found")
+              print("No new data files found")
           EOF
+          
+          python merge_data.py
       
-      # Step 6: Train new model
       - name: 🎯 Train New Model
         id: train
         run: |
-          echo "🚀 Starting model training..."
+          echo "Starting model training..."
           python src/train.py
-          
-          # Extract metrics from metadata
           R2_SCORE=$(python -c "import json; print(json.load(open('models/model_metadata.json'))['metrics']['r2_score'])")
           echo "r2_score=$R2_SCORE" >> $GITHUB_OUTPUT
-          echo "📊 New Model R² Score: $R2_SCORE"
+          echo "New Model R² Score: $R2_SCORE"
       
-      # Step 7: Compare models and decide deployment
       - name: 🔍 Compare Models
         id: compare
+        continue-on-error: true
         run: |
-          # Run comparison script
-          if python src/compare.py ${{ steps.train.outputs.r2_score }}; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-            echo "✅ New model is better - will deploy"
-          else
-            echo "should_deploy=false" >> $GITHUB_OUTPUT
-            echo "❌ New model not better - keeping current model"
-          fi
+          python src/compare.py ${{ steps.train.outputs.r2_score }}
+          echo "should_deploy=true" >> $GITHUB_OUTPUT
       
-      # Step 8: Deploy new model (only if better)
-      - name: 🚀 Deploy New Model
-        if: steps.compare.outputs.should_deploy == 'true'
+      - name: 🔍 Check Comparison Failed
+        if: failure()
         run: |
-          echo "🎉 Deploying new model..."
-          
-          # Configure git
+          echo "should_deploy=false" >> $GITHUB_OUTPUT
+      
+      - name: 🚀 Deploy New Model
+        if: steps.compare.outcome == 'success'
+        run: |
+          echo "Deploying new model..."
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          
-          # Add and commit the new model
-          git add models/current_model.pkl
-          git add models/model_metadata.json
-          git add data/training_data.csv
-          
-          # Commit with detailed message
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          R2_SCORE="${{ steps.train.outputs.r2_score }}"
-          git commit -m "🤖 Auto-deploy: New model (R²=$R2_SCORE) at $TIMESTAMP
-
-          - Model performance improved
-          - R² Score: $R2_SCORE
-          - Training data updated
-          - Automated deployment via GitHub Actions"
-          
-          # Push changes
+          git add models/current_model.pkl models/model_metadata.json data/training_data.csv
+          git commit -m "Auto-deploy: New model R²=${{ steps.train.outputs.r2_score }}"
           git push
-          
-          echo "✅ Model deployed successfully!"
+          echo "Model deployed successfully!"
       
-      # Step 9: Keep current model (if new one isn't better)
       - name: 🛑 Keep Current Model
-        if: steps.compare.outputs.should_deploy == 'false'
+        if: steps.compare.outcome == 'failure'
         run: |
-          echo "⚠️  New model did not meet improvement threshold"
-          echo "📌 Keeping current production model"
-          echo "💡 Tip: Check if you need more data or better features"
+          echo "New model did not meet improvement threshold"
+          echo "Keeping current production model"
       
-      # Step 10: Generate summary report
       - name: 📊 Generate Summary
         if: always()
         run: |
-          echo "# 🎯 Model Retraining Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# Model Retraining Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📈 Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **New Model R² Score**: ${{ steps.train.outputs.r2_score }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Deployment Decision**: ${{ steps.compare.outputs.should_deploy == 'true' && '✅ Deployed' || '❌ Not Deployed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "New Model R2 Score: ${{ steps.train.outputs.r2_score }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.compare.outputs.should_deploy }}" == "true" ]; then
-            echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
-            echo "The new model has been deployed to production." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## ℹ️ Current Model Retained" >> $GITHUB_STEP_SUMMARY
-            echo "The new model did not meet improvement criteria." >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Automated by GitHub Actions* 🤖" >> $GITHUB_STEP_SUMMARY
-```
-
-**Save the file!**
-
----
-
-## 📍 PHASE 3: Update .gitignore (5 mins)
-
-We need to ensure model files CAN be committed by the workflow.
-
-### Open `.gitignore` and UPDATE it:
-```
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-
-# MLflow
-mlruns/
-mlartifacts/
-
-# Data - allow training data, ignore large files
-*.csv
-!data/training_data.csv
-!data/new_data/*.csv
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Allow model files (needed for deployment)
-# These will be committed by GitHub Actions
-!models/current_model.pkl
-!models/model_metadata.json
+          echo "Automated by GitHub Actions" >> $GITHUB_STEP_SUMMARY
