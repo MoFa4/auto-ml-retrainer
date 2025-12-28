@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: auto-ml-retrainer-api
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
